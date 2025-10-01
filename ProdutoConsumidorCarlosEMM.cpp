@@ -14,19 +14,19 @@
 
 struct Config {
     std::string mode = "both";  // "par", "seq" ou "both"
-    int cap = 3;                // 1..5
-    int items = 12;             // >=10
-    int prod_ms = 120;          // delay producao
-    int cons_ms = 150;          // delay consumo
+    int cap = 3;                // capacidade do buffer
+    int items = 12;             // número de itens a produzir/consumir
+    int prod_ms = 120;          // delay de produção
+    int cons_ms = 150;          // delay de consumo
 };
 
-// -------------------- tempo --------------------
+// -------------------- medição de tempo --------------------
 using Clock = std::chrono::steady_clock;
 static inline long long elapsed_ms(Clock::time_point t0){
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now()-t0).count();
 }
 
-// Helper para impressao com largura fixa
+// Impressão com largura fixa (melhora leitura)
 static void log_line(const std::string& who, const std::string& msg, int buf, int cap){
     std::cout << std::left << std::setw(18) << who
               << " | " << std::setw(28) << msg
@@ -36,10 +36,12 @@ static void log_line(const std::string& who, const std::string& msg, int buf, in
 // ======================== PARALELO =========================
 std::deque<int> q;           // buffer compartilhado
 std::mutex mtx;
-std::condition_variable cp, cc; // can_produce, can_consume
-bool done = false;
+std::condition_variable cp, cc; // variáveis de condição (produção e consumo)
+bool done = false;           // flag de término
 
+// Thread do produtor
 static void producer_par(const Config c){
+    std::cout << "[INFO] Thread do produtor iniciada.\n";
     for(int i=1; i<=c.items; ++i){
         std::unique_lock<std::mutex> lk(mtx);
         while((int)q.size() >= c.cap) {
@@ -54,15 +56,19 @@ static void producer_par(const Config c){
     }
     { std::lock_guard<std::mutex> lk(mtx); done = true; }
     cc.notify_all();
+    std::cout << "[INFO] Thread do produtor finalizada.\n";
 }
 
+// Thread do consumidor
 static void consumer_par(const Config c){
+    std::cout << "[INFO] Thread do consumidor iniciada.\n";
     int consumed = 0;
     while(true){
         std::unique_lock<std::mutex> lk(mtx);
         while(q.empty()){
             if(done) {
                 log_line("[Consumidor]", "Fim da producao, total="+std::to_string(consumed), (int)q.size(), c.cap);
+                std::cout << "[INFO] Thread do consumidor finalizada.\n";
                 return;
             }
             log_line("[Consumidor]", "Buffer vazio, aguardando...", (int)q.size(), c.cap);
@@ -118,17 +124,32 @@ int main(int argc, char** argv){
               << " | P="<< c.prod_ms << "ms | C="<< c.cons_ms << "ms\n\n";
 
     if(c.mode == "seq"){
+        std::cout << "===== Inicio da execucao SEQUENCIAL =====\n\n";
         auto ms = run_sequential(c);
-        std::cout << "\n[Resumo] SEQUENTIAL total: " << ms << " ms\n";
+        std::cout << "\n===== Fim da execucao SEQUENCIAL =====\n";
+        std::cout << "[Resumo] SEQUENTIAL total: " << ms << " ms\n";
+
     } else if(c.mode == "par"){
+        std::cout << "===== Inicio da execucao PARALELA =====\n\n";
         auto ms = run_parallel(c);
-        std::cout << "\n[Resumo] PARALLEL total: " << ms << " ms\n";
+        std::cout << "\n===== Fim da execucao PARALELA =====\n";
+        std::cout << "[Resumo] PARALLEL total: " << ms << " ms\n";
+
     } else if(c.mode == "both"){
+        // Execução sequencial
+        std::cout << "===== Inicio da execucao SEQUENCIAL =====\n\n";
         auto ms_seq = run_sequential(c);
         std::cout << "\n===== Fim da execucao SEQUENCIAL =====\n\n";
+
+        // Resetar estado global
         { std::lock_guard<std::mutex> lk(mtx); q.clear(); done=false; }
+
+        // Execução paralela
+        std::cout << "===== Inicio da execucao PARALELA =====\n\n";
         auto ms_par = run_parallel(c);
-        std::cout << "\n===== Inicio da execucao PARALELA =====\n\n";
+        std::cout << "\n===== Fim da execucao PARALELA =====\n\n";
+
+        // Resumo comparativo
         std::cout << "[Resumo] SEQUENTIAL total: " << ms_seq << " ms\n";
         std::cout << "[Resumo] PARALLEL   total: " << ms_par << " ms\n";
         std::cout << "[Resumo] Diferenca (seq-par): " << (ms_seq - ms_par) << " ms\n";
